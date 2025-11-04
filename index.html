@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>picture</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a1a1a;
+            color: #fff;
+            font-family: Arial, sans-serif;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .container {
+            display: flex;
+            width: 100%;
+            height: 100vh;
+        }
+        .canvas-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            padding: 20px;
+        }
+        .controls-panel {
+            width: 350px;
+            padding: 20px;
+            background: #2a2a2a;
+            overflow-y: auto;
+            border-left: 2px solid #3a3a3a;
+        }
+        h1 {
+            text-align: center;
+            color: #fff;
+            margin-top: 0;
+            margin-bottom: 20px;
+            font-size: 18px;
+        }
+        .controls {
+            margin: 20px 0;
+            padding: 0;
+        }
+        label {
+            display: inline-block;
+            margin-right: 15px;
+            margin-bottom: 10px;
+            color: #ccc;
+        }
+        input[type="file"] {
+            margin: 5px;
+            color: #fff;
+        }
+        input[type="range"] {
+            width: 300px;
+            margin: 5px;
+        }
+        button {
+            padding: 8px 15px;
+            margin: 5px;
+            background: #3a3a3a;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #4a4a4a;
+        }
+        canvas {
+            display: block;
+            max-width: 100%;
+            max-height: 100%;
+            border: 2px solid #555;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            background: #000;
+        }
+        .info {
+            margin-top: 20px;
+            padding: 15px;
+            background: #2a2a2a;
+            border-radius: 5px;
+            color: #ccc;
+        }
+        .slider-container {
+            margin: 10px 0;
+        }
+        .slider-value {
+            display: inline-block;
+            margin-left: 10px;
+            color: #51cf66;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="canvas-container">
+            <canvas id="canvas"></canvas>
+        </div>
+        
+        <div class="controls-panel">
+            <h1>圖片疊加 - GLSL 混合</h1>
+            
+            <div class="controls">
+                <button onclick="swapEffects()">交換效果</button>
+                
+                <div class="slider-container">
+                    <label>藥片包裝 銳利化:</label>
+                    <input type="range" id="sharpenSlider" min="0" max="100" value="7" step="1">
+                    <span class="slider-value" id="sharpenValue">7%</span>
+                </div>
+                
+                <div class="slider-container">
+                    <label>電梯按鈕 模糊化:</label>
+                    <input type="range" id="blurSlider" min="0" max="100" value="16" step="1">
+                    <span class="slider-value" id="blurValue">16%</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Vertex shader
+        const vertexShaderSource = `
+            attribute vec2 a_position;
+            varying vec2 v_texCoord;
+            
+            void main() {
+                gl_Position = vec4(a_position, 0.0, 1.0);
+                v_texCoord = (a_position + 1.0) * 0.5;
+                v_texCoord.y = 1.0 - v_texCoord.y;
+            }
+        `;
+
+        // Fragment shader - 混??個???保?寬?比?
+        const fragmentShaderSource = `
+            #ifdef GL_ES
+            precision mediump float;
+            #endif
+            
+            uniform vec2 u_resolution;
+            uniform vec2 u_mouse;
+            uniform float u_time;
+            uniform sampler2D u_tex0;
+            uniform sampler2D u_tex1;
+            uniform float u_sharpenFactor; // 0-1, 锐利化强度
+            uniform float u_blurFactor; // 0-1, 模糊强度
+            uniform float u_swapEffects; // 0.0=正常, 1.0=交换效果
+            uniform vec2 u_imageAspect; // ??寬??(width/height, height/width)
+            uniform vec2 u_canvasAspect; // ??寬??(width/height, height/width)
+            uniform vec2 u_image0Size; // 圖像0的實際像素尺寸 (width, height)
+            uniform vec2 u_image1Size; // 圖像1的實際像素尺寸 (width, height)
+            
+            varying vec2 v_texCoord;
+            
+            // 获取纹理像素
+            vec4 getTextureColor(sampler2D tex, vec2 uv) {
+                return texture2D(tex, uv);
+            }
+            
+            // 锐利化效果 - 使用拉普拉斯算子（增强边缘）
+            vec4 sharpen(sampler2D tex, vec2 uv, vec2 texelSize, float intensity) {
+                vec4 center = texture2D(tex, uv);
+                
+                // 拉普拉斯锐化核（3x3）
+                vec4 laplacian = -1.0 * texture2D(tex, uv + vec2(-texelSize.x, 0.0))
+                               - 1.0 * texture2D(tex, uv + vec2(texelSize.x, 0.0))
+                               - 1.0 * texture2D(tex, uv + vec2(0.0, -texelSize.y))
+                               - 1.0 * texture2D(tex, uv + vec2(0.0, texelSize.y))
+                               + 4.0 * center;
+                
+                // 将锐化结果与原始图像混合
+                vec4 sharpened = center + laplacian * intensity;
+                return mix(center, sharpened, intensity);
+            }
+            
+            // 亮度和对比度调整（白分明）
+            vec4 adjustBrightnessContrast(vec4 color, float brightness, float contrast) {
+                // 亮度调整
+                vec3 adjusted = color.rgb + brightness;
+                
+                // 对比度调整（增强白分明）
+                adjusted = (adjusted - 0.5) * (1.0 + contrast) + 0.5;
+                
+                return vec4(adjusted, color.a);
+            }
+            
+            // 高斯模糊
+            vec4 gaussianBlur(sampler2D tex, vec2 uv, vec2 texelSize, float blurRadius) {
+                vec4 color = vec4(0.0);
+                float total = 0.0;
+                
+                // 简化的高斯模糊核（5x5）
+                int radius = int(blurRadius);
+                float sigma = blurRadius / 2.0;
+                
+                for (int x = -2; x <= 2; x++) {
+                    for (int y = -2; y <= 2; y++) {
+                        vec2 offset = vec2(float(x), float(y)) * texelSize * blurRadius;
+                        float weight = exp(-(float(x*x + y*y)) / (2.0 * sigma * sigma));
+                        color += texture2D(tex, uv + offset) * weight;
+                        total += weight;
+                    }
+                }
+                
+                return color / total;
+            }
+            
+            void main() {
+                vec2 uv = v_texCoord;
+                
+                // ??寬??(width/height)
+                float imageAspect = u_imageAspect.x; // width/height
+                // ??寬??(width/height)  
+                float canvasAspect = u_canvasAspect.x; // width/height
+                
+                // 計?縮放比?（?定長??
+                // 如???比畫布更寬?以寬度為準?如???，以高度??
+                vec2 scale = vec2(1.0);
+                
+                if (imageAspect > canvasAspect) {
+                    // ??比畫布更寬?橫???）?以寬度為??
+                    // ??寬度填滿，?度?比?縮?
+                    // UV?y???要放大?????????高度
+                    scale = vec2(1.0, imageAspect / canvasAspect);
+                } else {
+                    // ??比畫布更高?縱???）?以?度為??
+                    // ??高度填滿，寬度?比?縮?
+                    // UV?x???要放大?????????寬度
+                    scale = vec2(canvasAspect / imageAspect, 1.0);
+                }
+                
+                // 調整UV座?以??寬高?（?中顯示?
+                // 將UV從[0,1]轉??以0.5?中心???系?縮放後?轉?
+                vec2 centeredUV = (uv - 0.5) / scale + 0.5;
+                
+                // ?顯示在??範?????
+                if (centeredUV.x < 0.0 || centeredUV.x > 1.0 || 
+                    centeredUV.y < 0.0 || centeredUV.y > 1.0) {
+                    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); // 超出範?顯示黑色
+                    return;
+                }
+                
+                // 获取滑块值（0-1）
+                float sharpenFactor = clamp(u_sharpenFactor, 0.0, 1.0);
+                float blurFactor = clamp(u_blurFactor, 0.0, 1.0);
+                bool swapEffects = u_swapEffects > 0.5;
+                
+                // 锐利化强度调整为3倍，特别呈现凹凸纹理和明暗交界
+                float sharpenIntensity = sharpenFactor * 3.0;
+                sharpenIntensity = clamp(sharpenIntensity, 0.0, 1.0); // 限制在0-1范围内
+                
+                // 模糊半径
+                float blurRadius = blurFactor * 18.0; // 最大模糊半径18像素
+                
+                // 计算纹理像素大小（基于图像实际尺寸）
+                vec2 texelSize0 = vec2(1.0 / u_image0Size.x, 1.0 / u_image0Size.y);
+                vec2 texelSize1 = vec2(1.0 / u_image1Size.x, 1.0 / u_image1Size.y);
+                
+                vec4 processed0, processed1;
+                
+                if (swapEffects) {
+                    // 交换效果：1.jpg应用模糊，2.jpg应用锐利化和亮度对比度
+                    
+                    // 处理1.jpg：模糊（使用blurFactor）
+                    processed0 = gaussianBlur(u_tex0, centeredUV, texelSize0, blurRadius);
+                    
+                    // 处理2.jpg：锐利化 + 亮度对比度调整（使用sharpenFactor）
+                    vec4 sharpened = sharpen(u_tex1, centeredUV, texelSize1, sharpenIntensity);
+                    float brightness = sharpenFactor * 0.1;
+                    float contrast = sharpenFactor * 1.5; // 对比度增强3倍
+                    processed1 = adjustBrightnessContrast(sharpened, brightness, contrast);
+                } else {
+                    // 正常效果：1.jpg应用锐利化和亮度对比度，2.jpg应用模糊
+                    
+                    // 处理1.jpg：锐利化 + 亮度对比度调整（使用sharpenFactor）
+                    vec4 sharpened = sharpen(u_tex0, centeredUV, texelSize0, sharpenIntensity);
+                    float brightness = sharpenFactor * 0.1;
+                    float contrast = sharpenFactor * 1.5; // 对比度增强3倍
+                    processed0 = adjustBrightnessContrast(sharpened, brightness, contrast);
+                    
+                    // 处理2.jpg：模糊（使用blurFactor）
+                    processed1 = gaussianBlur(u_tex1, centeredUV, texelSize1, blurRadius);
+                }
+                
+                // 混合两张图片（50%透明度混合）
+                vec3 finalColor = mix(processed0.rgb, processed1.rgb, 0.5);
+                
+                gl_FragColor = vec4(finalColor, 1.0);
+            }
+        `;
+
+        let gl, program, textures = {tex0: null, tex1: null};
+        let sharpenFactor = 0.07; // 1.jpg锐利化强度（7%）
+        let blurFactor = 0.16; // 2.jpg模糊强度（16%）
+        let effectsSwapped = 0.0; // 0.0=正常, 1.0=交换效果
+        let imageSizes = {tex0: {width: 1, height: 1}, tex1: {width: 1, height: 1}};
+
+        function isPowerOfTwo(value) {
+            return (value & (value - 1)) === 0;
+        }
+
+        function updateStatus(message, isError = false) {
+            const statusEl = document.getElementById('status');
+            if (statusEl) {
+                statusEl.textContent = '狀態：' + message;
+                statusEl.style.color = isError ? '#ff6b6b' : '#51cf66';
+            }
+            console.log(message);
+        }
+
+        function createShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        function createProgram(gl, vertexShader, fragmentShader) {
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error('Program link error:', gl.getProgramInfoLog(program));
+                gl.deleteProgram(program);
+                return null;
+            }
+            return program;
+        }
+
+        function loadTexture(gl, url, callback, textureIndex = 0) {
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            
+            const image = new Image();
+            // 移除 crossOrigin，允许加载本地文件
+            image.onload = function() {
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+                
+                if (isPowerOfTwo(image.width) && isPowerOfTwo(image.height)) {
+                    gl.generateMipmap(gl.TEXTURE_2D);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+                } else {
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                }
+                
+                // 保存圖片尺寸
+                if (textureIndex === 0) {
+                    imageSizes.tex0 = {width: image.width, height: image.height};
+                } else {
+                    imageSizes.tex1 = {width: image.width, height: image.height};
+                }
+                
+                // 根據圖片尺寸調整畫布大小（鎖定長邊）
+                adjustCanvasSize();
+                
+                callback(texture);
+            };
+            image.onerror = function() {
+                const errorMsg = `無法載入圖片: ${url}\n\n請確認：\n1. 圖片文件 (1.jpg 和 2.jpg) 與 HTML 文件在同一目錄\n2. 如果直接打開HTML文件，請使用本地服務器運行\n   - Python: python -m http.server\n   - Node.js: npx http-server`;
+                console.error(errorMsg);
+                alert(errorMsg);
+                callback(null);
+            };
+            image.src = url;
+        }
+
+        function loadTextureFromFile(gl, file, callback, textureIndex = 0) {
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const image = new Image();
+                image.onload = function() {
+                    gl.bindTexture(gl.TEXTURE_2D, texture);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+                    
+                    if (isPowerOfTwo(image.width) && isPowerOfTwo(image.height)) {
+                        gl.generateMipmap(gl.TEXTURE_2D);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+                    } else {
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                    }
+                    
+                    // 保存圖片尺寸
+                    if (textureIndex === 0) {
+                        imageSizes.tex0 = {width: image.width, height: image.height};
+                    } else {
+                        imageSizes.tex1 = {width: image.width, height: image.height};
+                    }
+                    
+                    // 根據圖片尺寸調整畫布大小（鎖定長邊）
+                    adjustCanvasSize();
+                    
+                    callback(texture);
+                };
+                image.onerror = function() {
+                    callback(null);
+                };
+                image.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function adjustCanvasSize() {
+            if (!gl) return;
+            
+            // 使用兩張圖片中較大的尺寸作為參考（鎖定長邊）
+            const img0 = imageSizes.tex0;
+            const img1 = imageSizes.tex1;
+            
+            // 計算兩張圖片的最大長邊
+            const maxWidth = Math.max(img0.width, img1.width);
+            const maxHeight = Math.max(img0.height, img1.height);
+            
+            // 如果圖片尺寸還是默認值，不調整
+            if (maxWidth === 1 && maxHeight === 1) return;
+            
+            // 確定長邊並計算合適的畫布尺寸
+            const maxCanvasSize = 1200; // 最大畫布尺寸
+            
+            let canvasWidth, canvasHeight;
+            if (maxWidth > maxHeight) {
+                // 橫向圖片，以寬度為基準
+                canvasWidth = Math.min(maxWidth, maxCanvasSize);
+                canvasHeight = Math.round(canvasWidth * maxHeight / maxWidth);
+            } else {
+                // 縱向圖片，以高度為基準
+                canvasHeight = Math.min(maxHeight, maxCanvasSize);
+                canvasWidth = Math.round(canvasHeight * maxWidth / maxHeight);
+            }
+            
+            const canvas = document.getElementById('canvas');
+            canvas.width = canvasWidth;
+            canvas.height = canvasHeight;
+            
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            render();
+        }
+
+        function initWebGL() {
+            const canvas = document.getElementById('canvas');
+            // 初始畫布尺寸，會在載入圖片後自動調整
+            canvas.width = 800;
+            canvas.height = 600;
+            
+            gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+            if (!gl) {
+                alert('WebGL not supported!');
+                return;
+            }
+
+            const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+            const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
+            if (!vertexShader || !fragmentShader) return;
+
+            program = createProgram(gl, vertexShader, fragmentShader);
+            if (!program) return;
+
+            gl.viewport(0, 0, canvas.width, canvas.height);
+
+            loadDefaultImages();
+            
+            // Sharpen slider
+            const sharpenSlider = document.getElementById('sharpenSlider');
+            const sharpenValue = document.getElementById('sharpenValue');
+            sharpenSlider.addEventListener('input', function(e) {
+                sharpenFactor = e.target.value / 100.0;
+                sharpenValue.textContent = Math.round(sharpenFactor * 100) + '%';
+                render();
+            });
+            
+            // Blur slider
+            const blurSlider = document.getElementById('blurSlider');
+            const blurValue = document.getElementById('blurValue');
+            blurSlider.addEventListener('input', function(e) {
+                blurFactor = e.target.value / 100.0;
+                blurValue.textContent = Math.round(blurFactor * 100) + '%';
+                render();
+            });
+        }
+
+        function render() {
+            if (!gl || !program) return;
+            
+            gl.clearColor(0, 0, 0, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            
+            gl.useProgram(program);
+            
+            const positionLocation = gl.getAttribLocation(program, 'a_position');
+            const positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+                -1, -1,
+                 1, -1,
+                -1,  1,
+                -1,  1,
+                 1, -1,
+                 1,  1
+            ]), gl.STATIC_DRAW);
+            gl.enableVertexAttribArray(positionLocation);
+            gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+            
+            const resolutionLocation = gl.getUniformLocation(program, 'u_resolution');
+            const mouseLocation = gl.getUniformLocation(program, 'u_mouse');
+            const timeLocation = gl.getUniformLocation(program, 'u_time');
+            const tex0Location = gl.getUniformLocation(program, 'u_tex0');
+            const tex1Location = gl.getUniformLocation(program, 'u_tex1');
+            const sharpenFactorLocation = gl.getUniformLocation(program, 'u_sharpenFactor');
+            const blurFactorLocation = gl.getUniformLocation(program, 'u_blurFactor');
+            const swapEffectsLocation = gl.getUniformLocation(program, 'u_swapEffects');
+            const imageAspectLocation = gl.getUniformLocation(program, 'u_imageAspect');
+            const canvasAspectLocation = gl.getUniformLocation(program, 'u_canvasAspect');
+            const image0SizeLocation = gl.getUniformLocation(program, 'u_image0Size');
+            const image1SizeLocation = gl.getUniformLocation(program, 'u_image1Size');
+            
+            // 計算圖片寬高比（使用兩張圖片中較大的）
+            const img0 = imageSizes.tex0;
+            const img1 = imageSizes.tex1;
+            const maxWidth = Math.max(img0.width, img1.width);
+            const maxHeight = Math.max(img0.height, img1.height);
+            
+            // 圖片寬高比 (width/height, height/width)
+            const imageAspectX = maxWidth / maxHeight;
+            const imageAspectY = maxHeight / maxWidth;
+            
+            // 畫布寬高比 (width/height, height/width)
+            const canvasAspectX = gl.canvas.width / gl.canvas.height;
+            const canvasAspectY = gl.canvas.height / gl.canvas.width;
+            
+            gl.uniform2f(resolutionLocation, gl.canvas.width, gl.canvas.height);
+            gl.uniform2f(mouseLocation, 0, 0);
+            gl.uniform1f(timeLocation, Date.now() / 1000.0);
+            gl.uniform1f(sharpenFactorLocation, sharpenFactor);
+            gl.uniform1f(blurFactorLocation, blurFactor);
+            gl.uniform1f(swapEffectsLocation, effectsSwapped);
+            gl.uniform2f(imageAspectLocation, imageAspectX, imageAspectY);
+            gl.uniform2f(canvasAspectLocation, canvasAspectX, canvasAspectY);
+            gl.uniform2f(image0SizeLocation, img0.width, img0.height);
+            gl.uniform2f(image1SizeLocation, img1.width, img1.height);
+            
+            gl.activeTexture(gl.TEXTURE0);
+            if (textures.tex0) {
+                gl.bindTexture(gl.TEXTURE_2D, textures.tex0);
+                gl.uniform1i(tex0Location, 0);
+            }
+            
+            gl.activeTexture(gl.TEXTURE1);
+            if (textures.tex1) {
+                gl.bindTexture(gl.TEXTURE_2D, textures.tex1);
+                gl.uniform1i(tex1Location, 1);
+            }
+            
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+        }
+
+        function loadDefaultImages() {
+            console.log('開始載入圖片...');
+            console.log('當前頁面位置:', window.location.href);
+            console.log('建議：如果圖片無法載入，請使用本地服務器運行（如：python -m http.server）');
+            
+            loadTexture(gl, '1.jpg', function(tex) {
+                if (tex) {
+                    textures.tex0 = tex;
+                    console.log('成功載入 1.jpg');
+                } else {
+                    console.error('載入 1.jpg 失敗');
+                }
+                render();
+            }, 0);
+            
+            loadTexture(gl, '2.jpg', function(tex) {
+                if (tex) {
+                    textures.tex1 = tex;
+                    console.log('成功載入 2.jpg');
+                } else {
+                    console.error('載入 2.jpg 失敗');
+                }
+                render();
+            }, 1);
+        }
+
+        function swapEffects() {
+            // 交换效果标志
+            effectsSwapped = effectsSwapped > 0.5 ? 0.0 : 1.0;
+            
+            // 交换两个滑块的值
+            const temp = sharpenFactor;
+            sharpenFactor = blurFactor;
+            blurFactor = temp;
+            
+            // 更新滑块显示
+            const sharpenSlider = document.getElementById('sharpenSlider');
+            const sharpenValue = document.getElementById('sharpenValue');
+            const blurSlider = document.getElementById('blurSlider');
+            const blurValue = document.getElementById('blurValue');
+            
+            if (sharpenSlider && sharpenValue) {
+                sharpenSlider.value = Math.round(sharpenFactor * 100);
+                sharpenValue.textContent = Math.round(sharpenFactor * 100) + '%';
+            }
+            
+            if (blurSlider && blurValue) {
+                blurSlider.value = Math.round(blurFactor * 100);
+                blurValue.textContent = Math.round(blurFactor * 100) + '%';
+            }
+            
+            render();
+        }
+
+        window.swapEffects = swapEffects;
+
+        // Initialize
+        window.addEventListener('load', initWebGL);
+    </script>
+</body>
+</html>
+
